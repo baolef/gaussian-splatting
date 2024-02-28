@@ -176,6 +176,60 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
                            ply_path=ply_path)
     return scene_info
 
+
+def load_single_view(path, sample_name, source_id=0):
+    img_name = os.path.join(path, "img", sample_name, f'{source_id}.jpg') # 0004_000 sample_name = subject name + angle
+    intr_name = os.path.join(path, "parm", sample_name, f'{source_id}_intrinsic.npy')
+    extr_name = os.path.join(path, "parm", sample_name, f'{source_id}_extrinsic.npy')
+    intr, extr = np.load(intr_name), np.load(extr_name)
+    img = Image.open(img_name)
+    return img, intr, extr
+
+def get_cam_info(path, sample_name, view_id=0):
+    img, intr, extr = load_single_view(path, sample_name, view_id)
+    width, height = img.width, img.height
+
+    R = np.array(extr[:3, :3], np.float32).reshape(3, 3).transpose(1, 0)
+    T = np.array(extr[:3, 3], np.float32)
+
+    FovX = focal2fov(intr[0, 0], width)
+    FovY = focal2fov(intr[1, 1], height)
+
+    view_id = view_id if view_id == 0 else view_id - 1
+    sample_name = f"{sample_name}_novel{view_id:02d}"
+    cam=CameraInfo(uid=sample_name, R=R, T=T, FovY=FovY, FovX=FovX, image=img, image_path=sample_name, image_name=sample_name, width=width, height=height)
+    return cam
+
+def readCustomSceneInfo(path, name, train_idx, test_idx):
+    train_cam_infos = [get_cam_info(path, f"{name}_{str(x).zfill(3)}") for x in train_idx]
+    test_cam_infos = [get_cam_info(path, f"{name}_{str(x).zfill(3)}", y) for y in [0, 2, 3, 4] for x in test_idx]
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = "points3d.ply"
+    if not os.path.exists(ply_path):
+        # Since this data set has no colmap data, we start with random points
+        num_pts = 100_000
+        print(f"Generating random point cloud ({num_pts})...")
+
+        # We create random points inside the bounds of the synthetic Blender scenes
+        xyz = np.random.random((num_pts, 3)) - 0.5
+        shs = np.random.random((num_pts, 3)) / 255.0
+
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
+
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
     cam_infos = []
 
@@ -256,5 +310,6 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "Custom": readCustomSceneInfo,
 }
